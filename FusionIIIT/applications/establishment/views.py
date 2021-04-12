@@ -13,6 +13,7 @@ from datetime import datetime,date
 from .models import *
 from .forms import *
 import numpy as np
+from dateutil.relativedelta import relativedelta
 
 def initial_checks(request):
     return {}
@@ -32,10 +33,16 @@ def is_hod(request):
         return True
     return False
 
+def is_registrar(request):
+    user_dsg = list(HoldsDesignation.objects.filter(user=request.user))
+    designation = user_dsg[0].designation.name
+    if("Registrar" in designation):
+        return True
+    return False
+
 def is_director(request):
      user_dsg = list(HoldsDesignation.objects.filter(user=request.user))
      designation = user_dsg[0].designation.name
-     print(designation)
      if("Director" in designation):
          return True
      return False
@@ -130,7 +137,7 @@ def handle_ltc_admin(request):
         app_id = request.POST.get('app_id')
         status = request.POST.get('status')
         reviewer = request.POST.get('reviewer_id')
-        designation = request.POST.get('reviewer_design')
+        designation = request.POST.get('reviewer_design3')
         remarks = request.POST.get('remarks')
         if status == 'requested':
             if reviewer and designation and app_id:
@@ -163,6 +170,16 @@ def handle_ltc_admin(request):
             # verify that app_id is not changed, ie untampered
             application = Ltc_application.objects.select_related('applicant').get(id=app_id)
             application.status = status
+            eligible_ltc_user=Ltc_eligible_user.objects.get(user=application.applicant)
+            if(application.is_hometown_or_elsewhere=='hometown' and eligible_ltc_user.hometown_ltc_availed<eligible_ltc_user.hometown_ltc_allowed):
+                eligible_ltc_user.hometown_ltc_availed+=1
+                if(eligible_ltc_user.hometown_ltc_availed==2):
+                    eligible_ltc_user.elsewhere_ltc_availed=1
+            if(application.is_hometown_or_elsewhere=='elsewhere' and eligible_ltc_user.elsewhere_ltc_availed<eligible_ltc_user.elsewhere_ltc_allowed):
+                eligible_ltc_user.elsewhere_ltc_availed+=1
+                eligible_ltc_user.hometown_ltc_availed+=1
+            
+            eligible_ltc_user.save()
             application.save()
             # add notif
             messages.success(request, 'Status updated successfully!')
@@ -262,12 +279,20 @@ def generate_cpda_admin_lists(request):
     for app in unreviewed_apps:
         # if status is requested:to_assign/reviewed
         if app.status == 'requested':
-            temp = Assign_Form(initial={'status': 'requested', 'app_id': app.id})
+            temp = Assign_Form(initial={'assign_status': 'requested','app_id': app.id})
             temp.fields["status"]._choices = [
                 ('requested', 'Requested'),
                 ('approved', 'Approved'),
                 ('rejected', 'Rejected')
             ]
+            temp.fields["assign_status"]._choices = [
+                ('requested', 'Requested')
+            ]
+            temp.fields["accept_status"]._choices = [
+                ('approved', 'Approved'),
+                ('rejected', 'Rejected')
+            ]
+
         # if status is adjustments_pending:to_assign/reviewed
         else:
             temp = Assign_Form(initial={'status': 'adjustments_pending', 'app_id': app.id})
@@ -297,6 +322,7 @@ def generate_cpda_admin_lists(request):
         'cpda_approved_apps': approved_apps,
         'cpda_archived_apps': archived_apps
     }
+    print('pending ',pending_apps)
     return response
 
 
@@ -315,17 +341,51 @@ def generate_ltc_admin_lists(request):
         else:
             pending_apps.append(app)
 
+    availed = (Ltc_availed.objects.filter(ltc__status='requested'))
+    to_avail = (Ltc_to_avail.objects.filter(ltc__status='requested'))
+    depend = (Dependent.objects.filter(ltc__status='requested'))
+    availed_pending = []
+    to_avail_pending = []
+    depend_pending = []
+    availed_under_review = []
+    to_avail_under_review = []
+    depend_under_review = []
+
+    for app in availed:
+        if app.ltc.tracking_info.review_status == 'under_review':
+            availed_under_review.append(app)
+        else:
+            availed_pending.append(app)
+
+    for app in to_avail:
+        if app.ltc.tracking_info.review_status == 'under_review':
+            to_avail_under_review.append(app)
+        else:
+            to_avail_pending.append(app)
+
+    for app in depend:
+        if app.ltc.tracking_info.review_status == 'under_review':
+            depend_under_review.append(app)
+        else:
+            depend_pending.append(app)
+
     # combine assign_form object into unreviewed_app object respectively
     for app in unreviewed_apps:
-        temp = Assign_Form(initial={'status': 'requested', 'app_id': app.id})
+        temp = Assign_Form(initial={'assign_status': 'requested','app_id': app.id})
         temp.fields["status"]._choices = [
             ('requested', 'Requested'),
             ('approved', 'Approved'),
             ('rejected', 'Rejected')
         ]
+        temp.fields["assign_status"]._choices = [
+                ('requested', 'Requested')
+        ]
+        temp.fields["accept_status"]._choices = [
+                ('approved', 'Approved'),
+                ('rejected', 'Rejected')
+        ]
         app.assign_form = temp
 
-        # print (app.assign_form.fields['status']._choices)
 
 
     # approved and rejected
@@ -333,6 +393,10 @@ def generate_ltc_admin_lists(request):
                     .select_related('applicant')
                     .exclude(status='requested')
                     .order_by('-request_timestamp'))
+
+    availed_archive = (Ltc_availed.objects.exclude(ltc__status='requested'))
+    to_avail_archive = (Ltc_to_avail.objects.exclude(ltc__status='requested'))
+    depend_archive = (Dependent.objects.exclude(ltc__status='requested'))
 
     current_eligible_users = Ltc_eligible_user.objects.select_related('user').order_by('user')
     for user in current_eligible_users:
@@ -357,7 +421,16 @@ def generate_ltc_admin_lists(request):
         'ltc_new_eligible_user_form': new_ltc_eligible_user,
         'ltc_pending_apps': pending_apps,
         'ltc_under_review_apps': under_review_apps,
-        'ltc_archived_apps': archived_apps
+        'ltc_archived_apps': archived_apps,
+        'ltc_availed_pending': availed_pending,
+        'ltc_to_avail_pending': to_avail_pending,
+        'dependent_pending': depend_pending,
+        'ltc_availed_under_review': availed_under_review,
+        'ltc_to_avail_under_review': to_avail_under_review,
+        'dependent_under_review': depend_under_review,
+        'ltc_availed_archive': availed_archive,
+        'ltc_to_avail_archive': to_avail_archive,
+        'dependent_archive': depend_archive
     }
     return response
 
@@ -471,42 +544,91 @@ def handle_ltc_eligible(request):
         phone_number = request.POST.get('phone_number')
         travel_mode = request.POST.get('travel_mode')
 
-        ltc_availed = request.POST.get('ltc_availed')
-        ltc_to_avail = request.POST.get('ltc_to_avail')
-        dependents = request.POST.get('dependents')
+        
         requested_advance = request.POST.get('requested_advance')
 
         status = 'requested'
         timestamp = datetime.now()
-        application = Ltc_application.objects.create(
-            # save all
-            applicant=applicant,
-            pf_number=pf_number,
-            basic_pay = basic_pay,
-            is_leave_required = is_leave_req,
-            leave_start = leave_start,
-            leave_end = leave_end,
-            family_departure_date = family_departure_date,
-            leave_nature = leave_nature,
-            purpose = purpose,
-            is_hometown_or_elsewhere = leave_type,
-            address_during_leave = address_during_leave,
-            phone_number = phone_number,
-            travel_mode = travel_mode,
-            ltc_availed = ltc_availed,
-            ltc_to_avail = ltc_to_avail,
-            dependents = dependents,
-            requested_advance = requested_advance,
-            request_timestamp=timestamp,
-            status=status
-        )
-        # next 3 lines are working magically, DON'T TOUCH THEM
-        track = Ltc_tracking.objects.create(
-            application = application,
-            review_status = 'to_assign'
-        )
-        # add notif here
-        messages.success(request, 'Request sent successfully!')
+        
+        eligible_ltc_user=Ltc_eligible_user.objects.get(user=applicant)
+        ret = relativedelta(datetime.today().date(), eligible_ltc_user.date_of_joining)
+        ret=ret.years + ret.months/12 + ret.days/365
+        if(eligible_ltc_user.hometown_ltc_availed+eligible_ltc_user.elsewhere_ltc_availed>2):
+            messages.error(request, 'Not Eligible, LTC limit exceeded!!')
+        else:
+            application = Ltc_application.objects.create(
+                # save all
+                applicant=applicant,
+                pf_number=pf_number,
+                basic_pay = basic_pay,
+                is_leave_required = is_leave_req,
+                leave_start = leave_start,
+                leave_end = leave_end,
+                family_departure_date = family_departure_date,
+                leave_nature = leave_nature,
+                purpose = purpose,
+                is_hometown_or_elsewhere = leave_type,
+                address_during_leave = address_during_leave,
+                phone_number = phone_number,
+                travel_mode = travel_mode,
+                requested_advance = requested_advance,
+                request_timestamp=timestamp,
+                status=status
+            )
+            # ltc_availed
+            count = 1
+            while(1):
+                    name = request.POST.get('Name1'+str(count))
+                    age = request.POST.get('Age1'+str(count))
+                    if(name == None):
+                        break
+                    ltc_availed = Ltc_availed.objects.create(
+                                    ltc = application,
+                                    name = name,
+                                    age = age
+                    )
+            
+                    count += 1
+            # ltc_to_avail
+            count = 1
+            while(1):
+                    name = request.POST.get('Name2'+str(count))
+                    age = request.POST.get('Age2'+str(count))
+                    if(name == None):
+                        break
+                    ltc_to_avail = Ltc_to_avail.objects.create(
+                                    ltc = application,
+                                    name = name,
+                                    age = age
+                    )
+            
+                    count += 1
+
+            # Dependents
+            count = 1
+            while(1):
+                    name = request.POST.get('Name3'+str(count))
+                    age = request.POST.get('Age3'+str(count))
+                    depend = request.POST.get('Why fully dependent'+str(count))
+                    if(name == None):
+                        break
+                    dependent = Dependent.objects.create(
+                                    ltc = application,
+                                    name = name,
+                                    age = age,
+                                    depend = depend
+                    )
+            
+                    count += 1
+
+
+            # next 3 lines are working magically, DON'T TOUCH THEM
+            track = Ltc_tracking.objects.create(
+                application = application,
+                review_status = 'to_assign'
+            )
+            # add notif here
+            messages.success(request, 'Request sent successfully!')
 
     if 'ltc_review' in request.POST:
         app_id = request.POST.get('app_id')
@@ -515,6 +637,7 @@ def handle_ltc_eligible(request):
         application = Ltc_application.objects.get(id=app_id)
         application.tracking_info.remarks = review_comment
         application.tracking_info.review_status = 'reviewed'
+        #if(application.is_hometown_or_elsewhere=='hometown')     
         application.tracking_info.save()
         # add notif here
         messages.success(request, 'Review submitted successfully!')
@@ -740,9 +863,9 @@ def handle_appraisal(request):
         app_id = int(request.POST.get('app_id'))
         review_comment = request.POST.get('remarks_director')
         result = request.POST.get('result')
-        application = Appraisal.objects.get(id=app_id)
+        application = Appraisal.objects.select_related('applicant').get(id=app_id)
         application.status = result
-        request_object = AppraisalRequest.objects.filter(appraisal = application)
+        request_object = AppraisalRequest.objects.select_related('appraisal').filter(appraisal = application)
         appraisal_track = request_object[0]
         appraisal_track.remark_director = review_comment
         appraisal_track.status_director = result
@@ -808,8 +931,13 @@ def generate_cpda_eligible_lists(request):
     today_date=date.today()
     block_period=str(2018+int((np.ceil((today_date.year-2018)/3)-1))*3)+"-"+ str(2018+int(np.ceil((today_date.year-2018)/3))*3)
     
-    
+    hod=is_hod(request)
+    registrar=is_registrar(request)
+    director=is_director(request)
     response = {
+        'hod':hod,
+        'registrar':registrar,
+        'director':director,
         'cpda_form': form,
         'cpda_billforms': bill_forms,
         'cpda_active_apps': active_apps,
@@ -827,13 +955,18 @@ def generate_ltc_eligible_lists(request):
     ltc_info = {}
     ltc_queryset = Ltc_eligible_user.objects.select_related('user').filter(user=request.user)
     ltc_info['eligible'] = ltc_queryset.exists()
+    less_than_1_year=False
 
     if ltc_info['eligible']:
         ltc_info['years_of_job'] = ltc_queryset.first().get_years_of_job()
         ltc_info['total_ltc_remaining'] = ltc_queryset.first().total_ltc_remaining()
         ltc_info['hometown_ltc_remaining'] = ltc_queryset.first().hometown_ltc_remaining()
         ltc_info['elsewhere_ltc_remaining'] = ltc_queryset.first().elsewhere_ltc_remaining()
-
+        
+        
+        if(float(ltc_info['years_of_job'])<1):
+            ltc_info['eligible']=False
+            less_than_1_year=True
         active_apps = (Ltc_application.objects
                         .select_related('applicant')
                         .filter(applicant=request.user)
@@ -845,6 +978,13 @@ def generate_ltc_eligible_lists(request):
                         .filter(applicant=request.user)
                         .exclude(status='requested')
                         .order_by('-request_timestamp'))
+
+        availed_active = (Ltc_availed.objects.filter(ltc__applicant=request.user).filter(ltc__status='requested'))
+        to_avail_active = (Ltc_to_avail.objects.filter(ltc__applicant=request.user).filter(ltc__status='requested'))
+        depend_active = (Dependent.objects.filter(ltc__applicant=request.user).filter(ltc__status='requested'))
+        availed_archived = (Ltc_availed.objects.filter(ltc__applicant=request.user).exclude(ltc__status='requested'))
+        to_avail_archived = (Ltc_to_avail.objects.filter(ltc__applicant=request.user).exclude(ltc__status='requested'))
+        depend_archived = (Dependent.objects.filter(ltc__applicant=request.user).exclude(ltc__status='requested'))
         form = Ltc_Form()
 
     to_review_apps = (Ltc_application.objects
@@ -852,18 +992,32 @@ def generate_ltc_eligible_lists(request):
                     .filter(status='requested')
                     .filter(tracking_info__review_status='under_review')
                     .order_by('-request_timestamp'))
+
+    availed_review = (Ltc_availed.objects.filter(ltc__tracking_info__reviewer_id=request.user).filter(ltc__status='requested').filter(ltc__tracking_info__review_status='under_review'))
+    to_avail_review = (Ltc_to_avail.objects.filter(ltc__tracking_info__reviewer_id=request.user).filter(ltc__status='requested').filter(ltc__tracking_info__review_status='under_review'))
+    depend_review = (Dependent.objects.filter(ltc__tracking_info__reviewer_id=request.user).filter(ltc__status='requested').filter(ltc__tracking_info__review_status='under_review'))
     for app in to_review_apps:
         app.reviewform = Review_Form(initial={'app_id': app.id})
-
+    
     response = {
         'ltc_info': ltc_info,
-        'ltc_to_review_apps': to_review_apps
+        'ltc_to_review_apps': to_review_apps,
+        'ltc_availed_review': availed_review,
+        'ltc_to_avail_review': to_avail_review,
+        'dependent_review': depend_review,
+        'lessthan1year': less_than_1_year
     }
     if ltc_info['eligible']:
         response.update({
             'ltc_form': form,
             'ltc_active_apps': active_apps,
-            'ltc_archive_apps': archive_apps
+            'ltc_archive_apps': archive_apps,
+            'ltc_availed_active': availed_active,
+            'ltc_to_avail_active': to_avail_active,
+            'dependent_active': depend_active,
+            'ltc_availed_archived': availed_archived,
+            'ltc_to_avail_archived': to_avail_archived,
+            'dependent_archived': depend_archived
         })
     return response
 
@@ -888,8 +1042,11 @@ def generate_appraisal_lists(request):
     achievments = emp_achievement.objects.filter(user = request.user)
     events = emp_event_organized.objects.filter(user = request.user)
 
-    active_apps = Appraisal.objects.filter(applicant=request.user).exclude(status='rejected').exclude(status='accepted').order_by('-timestamp')
-    archive_apps = Appraisal.objects.filter(applicant=request.user).exclude(status='requested').order_by('-timestamp')
+    active_apps = (Appraisal.objects.select_related('applicant').filter(applicant=request.user).exclude(status='rejected').exclude(status='accepted').order_by('-timestamp'))
+   
+    archive_apps = Appraisal.objects.select_related('applicant').filter(applicant=request.user).exclude(status='requested').order_by('-timestamp')
+    request_active = (AppraisalRequest.objects.select_related('appraisal').filter(appraisal__applicant=request.user).filter(appraisal__status='requested'))
+    request_archived = (AppraisalRequest.objects.select_related('appraisal').filter(appraisal__applicant=request.user).exclude(appraisal__status='requested'))
 
     response.update({
             'user_courses': user_courses,
@@ -903,7 +1060,9 @@ def generate_appraisal_lists(request):
             'achievments': achievments,
             'events': events,
             'appraisal_active_apps':active_apps,
-            'appraisal_archive_apps':archive_apps
+            'appraisal_archive_apps':archive_apps,
+            'appraisal_requests_active':request_active,
+            'appraisal_requests_archived':request_archived
     })
 
     return response
@@ -912,8 +1071,8 @@ def generate_appraisal_lists(request):
 def generate_appraisal_lists_hod(request):
 
     response = {}
-    review_apps_hod = AppraisalRequest.objects.filter(hod = request.user).exclude(status_hod = 'rejected').exclude(status_hod = 'accepted')
-    archived_apps_hod = AppraisalRequest.objects.filter(hod = request.user).exclude(status_hod = 'pending')
+    review_apps_hod = AppraisalRequest.objects.select_related('appraisal').filter(hod = request.user).exclude(status_hod = 'rejected').exclude(status_hod = 'accepted')
+    reviewed_apps_hod = AppraisalRequest.objects.select_related('appraisal').filter(hod = request.user).exclude(status_hod = 'pending')
     course_objects_all = Curriculum_Instructor.objects.all()
     consultancy_projects_all = emp_consultancy_projects.objects.all()
     research_projects_all = emp_research_projects.objects.all()
@@ -924,9 +1083,11 @@ def generate_appraisal_lists_hod(request):
     publications_all = emp_published_books.objects.all()
     conferences_all = emp_confrence_organised.objects.all()
     achievments_all = emp_achievement.objects.all()
+    appraisal_all = Appraisal.objects.select_related('applicant').all()
 
     response.update({
-        'archived_apps_hod': archived_apps_hod,
+        'hod': True,
+        'reviewed_apps_hod': reviewed_apps_hod,
         'course_objects_all': course_objects_all,
         'review_apps_hod': review_apps_hod,
         'thesis_all': thesis_all,
@@ -937,15 +1098,16 @@ def generate_appraisal_lists_hod(request):
         'conferences_all': conferences_all,
         'achievments_all': achievments_all,
         'consultancy_projects_all': consultancy_projects_all,
-        'research_projects_all': research_projects_all
+        'research_projects_all': research_projects_all,
+        'appraisal_all': appraisal_all
     })
     return response
 
 
 def generate_appraisal_lists_director(request):
     response = {}
-    review_apps_director = AppraisalRequest.objects.filter(director = request.user).exclude(status_hod = 'rejected').exclude(status_hod = 'pending').exclude(status_director = 'rejected').exclude(status_director = 'accepted')
-    archived_apps_director = AppraisalRequest.objects.filter(director = request.user).exclude(status_director = 'pending')
+    review_apps_director = AppraisalRequest.objects.select_related('appraisal').filter(director = request.user).exclude(status_hod = 'rejected').exclude(status_hod = 'pending').exclude(status_director = 'rejected').exclude(status_director = 'accepted')
+    reviewed_apps_director = AppraisalRequest.objects.select_related('appraisal').filter(director = request.user).exclude(status_director = 'pending')
     course_objects_all = Curriculum_Instructor.objects.all()
     consultancy_projects_all = emp_consultancy_projects.objects.all()
     research_projects_all = emp_research_projects.objects.all()
@@ -956,11 +1118,12 @@ def generate_appraisal_lists_director(request):
     publications_all = emp_published_books.objects.all()
     conferences_all = emp_confrence_organised.objects.all()
     achievments_all = emp_achievement.objects.all()
-
+    appraisal_all = Appraisal.objects.select_related('applicant').all()
     response.update({
+        'director': True,
         'course_objects_all': course_objects_all,
         'review_apps_director': review_apps_director,
-        'archived_apps_director': archived_apps_director,
+        'reviewed_apps_director': reviewed_apps_director,
         'thesis_all': thesis_all,
         'events_all': events_all,
         'patents_all': patents_all,
@@ -969,7 +1132,8 @@ def generate_appraisal_lists_director(request):
         'conferences_all': conferences_all,
         'achievments_all': achievments_all,
         'consultancy_projects_all': consultancy_projects_all,
-        'research_projects_all': research_projects_all
+        'research_projects_all': research_projects_all,
+        'appraisal_all': appraisal_all
     })
 
     return response
@@ -981,7 +1145,6 @@ def establishment(request):
     response = {}
     # Check if establishment variables exist, if not create some fields or ask for them
     response.update(initial_checks(request))
-    # print(request.user.username)
     if is_admin(request) and request.method == "POST":
         if is_cpda(request.POST):
             handle_cpda_admin(request)
