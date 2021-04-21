@@ -146,6 +146,8 @@ class Ltc_application(models.Model):
         db_table = 'Ltc Application'
 
 
+
+
 class Ltc_tracking(models.Model):
     application = models.OneToOneField(Ltc_application, primary_key=True, related_name='tracking_info',on_delete=models.CASCADE)
     reviewer_id = models.ForeignKey(User, null = True, blank=True, on_delete=models.CASCADE)
@@ -159,6 +161,25 @@ class Ltc_tracking(models.Model):
     class Meta:
         db_table = 'Ltc Tracking'
 
+class Ltc_availed(models.Model):
+    ltc = models.ForeignKey(Ltc_application, related_name='ltcAvailed',
+                                    on_delete=models.CASCADE)
+    name=models.CharField(max_length=30)
+    age=models.IntegerField(blank=True, null=True)
+
+class Ltc_to_avail(models.Model):
+    ltc = models.ForeignKey(Ltc_application, related_name='ltcToAvail',
+                                    on_delete=models.CASCADE)
+    name=models.CharField(max_length=30)
+    age=models.IntegerField(blank=True, null=True)
+
+class Dependent(models.Model):
+    ltc = models.ForeignKey(Ltc_application, related_name='Dependent',
+                                    on_delete=models.CASCADE)
+    name=models.CharField(max_length=30)
+    age=models.IntegerField(blank=True, null=True)
+    depend=models.CharField(max_length=30)
+
 
 class Ltc_eligible_user(models.Model):
     user = models.OneToOneField(User, primary_key=True, on_delete=models.CASCADE)
@@ -166,7 +187,7 @@ class Ltc_eligible_user(models.Model):
     current_block_size = models.IntegerField(default=4)
 
     total_ltc_allowed = models.IntegerField(default=2)
-    hometown_ltc_allowed = models.IntegerField(default=1)
+    hometown_ltc_allowed = models.IntegerField(default=2)
     elsewhere_ltc_allowed = models.IntegerField(default=1)
 
     hometown_ltc_availed = models.IntegerField(default=0)
@@ -177,8 +198,8 @@ class Ltc_eligible_user(models.Model):
         return "{:.2f}".format(ret.years + ret.months/12 + ret.days/365)
 
     def total_ltc_remaining(self):
-        return (self.total_ltc_allowed
-            - self.hometown_ltc_availed
+        return (self.hometown_ltc_allowed
+            - self.hometown_ltc_availed+self.elsewhere_ltc_allowed
             - self.elsewhere_ltc_availed)
 
     def hometown_ltc_remaining(self):
@@ -191,6 +212,7 @@ class Ltc_eligible_user(models.Model):
 
     def __str__(self):
         return str(self.user.username) + ' - joined on ' + str(self.date_of_joining)
+
 
 
 class Appraisal(models.Model):
@@ -299,8 +321,8 @@ class SponsoredProjects(models.Model):
 class AppraisalRequest(models.Model):
     """ Stores the appraisal request info of the user related to :model:'establishment.Appraisal' """
     appraisal=models.ForeignKey(Appraisal, related_name='appraisal_tracking', on_delete=models.CASCADE)
-    hod = models.ForeignKey(User, related_name='hod', on_delete=models.CASCADE)
-    director = models.ForeignKey(User, related_name='director', on_delete=models.CASCADE)
+    hod = models.ForeignKey(User, related_name='hod', on_delete=models.CASCADE,null=True)
+    director = models.ForeignKey(User, related_name='director', on_delete=models.CASCADE,null=True)
     remark_hod = models.CharField(max_length=50, blank=True, null=True)
     remark_director = models.CharField(max_length=50, blank=True, null=True)
     status_hod = models.CharField(max_length=20, default='pending', choices=Constants.STATUS)
